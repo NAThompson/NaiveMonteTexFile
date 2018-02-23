@@ -1,0 +1,9 @@
+*.pdf
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.x
+*.synctex.gz
+*_minted-NaiveMonteCarloOnModernHardware/

@@ -136,7 +136,7 @@ This shows, for instance, that a double precision Monte-Carlo integration can on
 
 The second solution is to use Kahan summation to compute $\hat{Q}_{N}$, and this is what is done in boost.
 The update $e_{i} := (y_{i} - M_{i})/i$ is regarded as the update and Kahan summation is applied to the iteration $M_{i+1} := M_{i} + e_{i}$.
-There is additional structure in the one pass mean calculation that could perhaps be exploited more effectively, but the idea is very effective and the error bound is improved to
+There is additional structure in the one pass mean calculation that could perhaps be exploited more effectively, but the idea is demonstrably effective (see \mintinline{bash}{kahan_avg.cpp}) and the error bound is improved to
 \begin{align}\label{KahanError}
 \frac{\left| I[f] - \hat{Q}_{N}[\hat{f}] \right|}{|\Omega|} \lesssim \frac{\sigma}{\sqrt{N}} + ((2+k)\mu_{M} + CN\mu_{M}^2)\left\|f\right\|_{1}
 \end{align}
@@ -148,6 +148,27 @@ The optimal number of function calls using Kahan summation is
 N_{\mathrm{opt, stab}} = \left( \frac{\sigma}{2C\left\|f\right\|_{1} }\right)^{2/3}  \mu_{M}^{-4/3} \approx N_{\mathrm{opt,unstab}}^{2}
 \end{align*}
 and the minimal achievable error is $\mathcal{O}(\mu_{M}^{2/3})$.
+That Kahan summation is both relevant and necessary is easily demonstrated by compiling our routine with the \mintinline{bash}{-funsafe-math-optimizations -ffast-math} flags provided by gcc-7.
+Using the canonical example of a Monte-Carlo integration to estimate $\pi$, we ran the function
+\begin{align*}
+f(x, y) :=
+\begin{cases}
+4, \quad x^2 + y^2 \le 1	\\
+0, \quad \textrm{otherwise}
+\end{cases}
+\end{align*}
+through our routine at error goal 0.001, compiling with and without  \mintinline{bash}{-funsafe-math-optimizations -ffast-math}.
+With the unsafe math optimizations enabled, we obtained the following estimates of $\pi$ in 32 bit floating point precision, in just a few seconds of calculation:
+\begin{align*}
+2.42090392, 2.42100596, 2.42088056, 2.42102337, 2.42099142.
+\end{align*}
+These values are systematically biased and way outside our error goals.
+With unsafe math optimizations disabled, which preserves the Kahan summation, we obtain 
+\begin{align*}
+3.14145970, 3.14165688, 3.14160061, 3.14145231, 3.14144731.
+\end{align*}
+
+
 
 A typical argument against Kahan summation is that it emulates a higher precision arithmetic, so why not just have the user employ a higher-precision type? Indeed, this can be done in our routine, as long as the type supports C++11 atomic loads and stores.
 However, once you employ a higher precision type, it is applied \emph{everywhere}, which may be inefficient.
@@ -321,7 +342,7 @@ In practice, it has been observed to work well, but for strongly peaked integran
 
 A naive Monte-Carlo integration, though perhaps not powerful enough to enter into production computational workflows, is nonetheless a basic technology which allows us to sanity check more powerful algorithms, and as such it deserves a careful implementation.
 Despite its simplicity, naive Monte-Carlo integration exhibits subtle failure modes and can be potentially frustrating for users.
-We hope to avoid these mistakes as we move forward deploying more sophisticated high-dimensional quadrature routines into Boost.Math, and expect many more.
+We hope this document can be of use to the future maintainers of boost.math, and hope to avoid these mistakes as we move forward deploying more sophisticated high-dimensional quadrature routines into Boost.Math, and expect many more.
 
 
 
