@@ -68,47 +68,52 @@ It is a testament to the massive increase in power of modern hardware and expres
 Multithreading increases the complexity of the algorithm, but not in the way one might expect.
 The algorithm is embarrassingly parallel, and language level support for multithreading and hardware support for atomics makes implementation straightforward.\footnote{Straightforward is not to be mistaken with easy. Getting the routine to compile on a broad array of compilers and architectures required a massive number of CI tasks and source code workarounds.}
 The real complication is that the vast increase in the total number of operations made possible by this change breaks our mental model of the error.
-Let $\mu_{M}$ denote the unit roundoff for the floating precision type (which we understand as half the machine epsilon) and $\hat{Q}_{N}[f]$ be the floating point sum corresponding to $Q_{N}[f]$.
-We use the ``online'' mean calculation discussed in \citep{knuth1997art} to calculate $Q_{N}[f]$, as alternatives generally require knowing the number of samples in advance.
+Let $\mu_{M} = \epsilon_{M}/2$ denote the unit roundoff for the floating point type and $\hat{Q}_{N}[\hat{f}]$ be the floating point sum corresponding to $Q_{N}[f]$.
+The error can now be decomposed into three contributions
+\begin{align*}
+| I[f] - \hat{Q}_{N}[\hat{f}] | \lesssim \frac{|\Omega|\sigma_{N}}{\sqrt{N}} + \left| Q_{N}[f] - Q_{N}[\hat{f}] \right| + \left| Q_{N}[\hat{f}] - \hat{Q}_{N}[\hat{f}] \right|
+\end{align*}
+The center term depends only on how much $\hat{f}$ deviates from $f$.
+The assumption of 1 ULP deviation is generally too strict; instead we assume a $k \ge 2$ ULP deviation and write
+ \begin{align*}
+\frac{|\hat{f}(\mathbf{x}_{i}) - f(\mathbf{x}_{i})|}{|f(\mathbf{x}_{i})|} \le k\mu_{M}
+ \end{align*}
+at which point we can bound
+\begin{align*}
+\left| Q_{N}[f] - Q_{N}[\hat{f}] \right|  \le k\mu_{M} |\Omega| \frac{1}{N} \sum_{i=0}^{N-1} |f(\mathbf{x}_{i})| =: k\mu_{M}|\Omega| \left< |f| \right>_{N} \to k\mu_{M}|\Omega| \left\|f\right\|_{1}
+\end{align*}
+If $f \in L_{1}(\Omega)$ and is reasonably well approximated by $\hat{f}$, we see that the error of function evaluation is not too bothersome and independent of the number of samples.
+However, the numerical summation $\hat{Q}_{N}[\hat{f}]$ is problematic.
+Our worst-case error for unstabilized summation is \citep{higham1993accuracy}
+\begin{align*}
+ \left| Q_{N}[\hat{f}] - \hat{Q}_{N}[\hat{f}] \right| \le |\Omega| N\mu_{M} \left<|\hat{f}| \right>_{N} \approx  |\Omega| N\mu_{M} \left\|f\right\|_{1}
+\end{align*}
+Our volume normalized error is then
+\begin{align*}
+\frac{| I[f] - \hat{Q}_{N}[\hat{f}] | }{|\Omega|} \lesssim \frac{\sigma_{N}}{\sqrt{N}}  + (N+k)\mu_{M} \left\|f\right\|_{1}
+\end{align*}
+which we will model as
+\begin{align}\label{ErrorModel}
+\frac{| I[f] - \hat{Q}_{N}[\hat{f}] | }{|\Omega|} \lesssim \frac{\sigma}{\sqrt{N}}  + (N+k)\mu_{M} \left\|f\right\|_{1}
+\end{align}
+where $\sigma := \lim_{N\to \infty} \sigma_{N}$.
+
+The error model \ref{ErrorModel} shows that the worst case roundoff error \emph{diverges} faster than the Monte-Carlo algorithm \emph{converges}.
+The worst case roundoff occurs with sufficient frequency that a robust library routine must regard it as the correct error model; a trivial example using the Monte-Carlo estimation of $\pi$ which roughly attains the worst case error is demonstrated below.
+
+
+However, since the routine is parametrized in terms of the error instead of the number of function calls, we do not use naive summation, and instead use the ``online'' mean calculation discussed in \citep{knuth1997art} to calculate $Q_{N}[\hat{f}]$.
 This algorithm for the running mean $M_{i}$ computed from samples $y_{i}$ is symbolically represented as 
 \begin{align*}
 M_{0} := 0, \quad M_{i} := M_{i-1} + \frac{y_{i} - M_{i-1}}{i}
 \end{align*}
-We see that as $i \to \infty$, then the floating point mean $\hat{M}_{i-1}\oplus (\hat{y}_{i}\ominus \hat{M}_{i-1})\oslash i$ is bitwise equal to $\hat{M}_{i-1}$ whenever $i > \frac{|\hat{y}_{i}- \hat{M}_{i}|}{|\hat{M}_{i}|} \mu_{M}^{-1}$.
+This algorithm is often described as ``stable'', but in fact it may be a bit \emph{too} stable: We see that as $i \to \infty$, then the floating point mean $\hat{M}_{i-1}\oplus (\hat{y}_{i}\ominus \hat{M}_{i-1})\oslash i$ is bitwise equal to $\hat{M}_{i-1}$ whenever $i > \frac{|\hat{y}_{i}- \hat{M}_{i}|}{|\hat{M}_{i}|} \mu_{M}^{-1}$.
 If the samples $\hat{y}_{i}$ all lie within a bounded distance from the true mean $M$, then eventually $M_{i}$ ceases to evolve, wasting further computation.
-Assuming $\frac{|\hat{y}_{i}- \hat{M}_{i}|}{|\hat{M}_{i}|} \lesssim 1$ for large $i$, then then minimum achievable absolute error is $|\Omega|\sigma\sqrt{\mu_{M}}$, which is much larger than the precision of the type and indicates that lower precision could've been used had the algorithm employed a more sophisticated algorithm for computing the mean.
-
-To formalize this idea, we note that the error bound of the one pass average calculation is no better than naive summation.\footnote{Note to self: Prove this!}
-This means that
-\begin{align*}
-\left|\hat{Q}_{N}[\hat{f}] - Q_{N}[\hat{f}]\right|
-\le |\Omega|N\mu_{M} \frac{1}{N} \sum_{i=0}^{N-1} |\hat{f}(\mathbf{x}_{i})|
-\le |\Omega|N\mu_{M} \frac{1}{N} \sum_{i=0}^{N-1} |f(\mathbf{x}_{i})|(1 + k\mu_{M})
-\end{align*}
-where $k \ge 1$ allows for the function to be evaluated with some amount error exceeding the unit roundoff.
-As $N\to \infty$,
-\begin{align*}
-\frac{1}{N} \sum_{i=0}^{N-1} |f(\mathbf{x}_{i})| \to \left\|f\right\|_{1}
-\end{align*}
-and as such
-\begin{align*}
-\left|\hat{Q}_{N}[\hat{f}] - Q_{N}[\hat{f}]\right|
-\lesssim N|\Omega|\mu_{M}  \left\|f\right\|_{1} +N|\Omega|k\mu_{m}^{2}\left\|f\right\|_{1}
-\end{align*}
-From this we see that the error involved in evaluated the function is second order in the unit roundoff, and will henceforth be ignored.
-Our worst-case (volume normalized) error for unstabilized summation is \citep{higham1993accuracy}
-\begin{align}\label{ErrorEstimateWRoundoff}
-\frac{\left| I[f] - \hat{Q}_{N}[f] \right| }{|\Omega|}
-\le
-\frac{\left| I[f] - Q_{N}[\hat{f}]\right|}{|\Omega|} + \frac{\left| Q_{N}[f] -  \hat{Q}_{N}[\hat{f}] \right| }{|\Omega|}
-\approx \frac{\sigma}{\sqrt{N}} + N\mu_{M}\left\| f\right\|_{1}
-\end{align}
-where $\sigma := \lim_{N\to \infty} \sigma_{N}$.
-We see that the worst case roundoff error \emph{diverges} faster than the Monte-Carlo algorithm \emph{converges}.
-The worst case roundoff occurs with sufficient frequency that a robust library routine must regard it as the correct error model; a trivial example using the Monte-Carlo estimation of $\pi$ which roughly attains the worst case error is demonstrated below.
+(This is perhaps a blessing in disguise, since the iteration is prevented from going on a random walk!)
+In addition, the magnitude of the update $e_{i} :=  \frac{y_{i} - M_{i-1}}{i}$ decreases with increasing $i$, so on average, this summation method sums from large to small, rather than the more precise method of summing from small to large \citep{higham1993accuracy}.
 
 
-The error estimate \ref{ErrorEstimateWRoundoff} is uncontroversial, the question is whether it is relevant.
+The error estimate \ref{ErrorModel} is uncontroversial, the question is whether it is relevant.
 It might not be clear that $N\mu_{M}\approx 1$ is achieved on a reasonable timescale.
 Using 32 bit floats, the unit roundoff (which we will agree to mean half the machine epsilon) is ${\sim}1.2\times10^{-7}$.
 Assume that a function call takes ${\sim}\SI{100}{\nano \second}$, and we run the algorithm on a chip with 100 threads.
@@ -119,20 +124,21 @@ However, the user is now victim to a more pernicious problem: By the time $10^{1
 In addition, multiple runs with different random number generators are not guaranteed to alert the user to the problem: The quadrature nodes are random, but the values produced by the function evaluation are not.
 It is possible to be just as systematically biased under roundoff using one set of quadrature nodes as another. 
 
-There are two potential solutions to this problem: One is to use the error estimate \ref{ErrorEstimateWRoundoff} to obtain an \emph{optimal} number of function calls, and return whenever the error goal is achieved or the number of calls exceeds this value.
-A quick exercise shows us that the optimal number of calls is $N_{\mathrm{opt}} \approx \left( \frac{\sigma}{2\mu_{M}\left\|f\right\|_{1}}\right)^{2/3}$.
+There are two potential solutions to this problem: One is to use the error estimate \ref{ErrorModel} to obtain an \emph{optimal} number of function calls, and return whenever the error goal is achieved or the number of calls exceeds this value.
+Minimizing the maximum error shows us that the optimal number of calls is $N_{\mathrm{opt}} \approx \left( \frac{\sigma}{2\mu_{M}\left\|f\right\|_{1}}\right)^{2/3}$.
 This method was tested, and does indeed work.
 However, plugging the optimal number of calls into the volume normalized error bound shows that the minimum error bound is approximately
 \begin{align*}
 (2^{1/3}+2^{-2/3})\sigma^{2/3}\left\|f\right\|_{1}^{1/3} \mu_{M}^{1/3}
 \end{align*}
- distressingly large, see Table \ref{tab:errorestimates}.
-This shows that a double precision Monte-Carlo integration can only hope to recover roughly floating precision.
+which is distressingly large, see Table \ref{tab:errorestimates}.
+This shows, for instance, that a double precision Monte-Carlo integration can only hope to recover roughly floating precision.
 
-The second solution is to use Kahan summation to compute $\hat{Q}_{N}$, and this is what is done in boost, which applies it to the one-pass variance and mean calculation presented in \citep{knuth1997art}.
-This changes the error bound to 
+The second solution is to use Kahan summation to compute $\hat{Q}_{N}$, and this is what is done in boost.
+The update $e_{i} := (y_{i} - M_{i})/i$ is regarded as the update and Kahan summation is applied to the iteration $M_{i+1} := M_{i} + e_{i}$.
+There is additional structure in the one pass mean calculation that could perhaps be exploited more effectively, but the idea is very effective and the error bound is improved to
 \begin{align}\label{KahanError}
-\frac{\left| I[f] - \hat{Q}_{N}[\hat{f}] \right|}{|\Omega|} \lesssim \frac{\sigma}{\sqrt{N}} + (2\mu_{M} + CN\mu_{M}^2)\left\|f\right\|_{1}
+\frac{\left| I[f] - \hat{Q}_{N}[\hat{f}] \right|}{|\Omega|} \lesssim \frac{\sigma}{\sqrt{N}} + ((2+k)\mu_{M} + CN\mu_{M}^2)\left\|f\right\|_{1}
 \end{align}
 for some $C > 0$.
 The $\mathcal{O}(N\mu_{M}^2)$ term shows us that the use of Kahan summation cannot make the error independent of the number of function calls, but this cannot be achieved anyway, since this is error term has the same form as the error from adding approximate function values $\hat{f}(\mathbf{x}_{i}) \approx f(\mathbf{x}_{i})(1+\epsilon_{i})$ where $|\epsilon_{i}| \le 2\mu_{M}$ is a typical error estimate for function evaluation.
