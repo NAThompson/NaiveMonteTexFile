@@ -114,8 +114,8 @@ In addition, the magnitude of the update $e_{i} :=  \frac{y_{i} - M_{i-1}}{i}$ d
 
 
 The error estimate \ref{ErrorModel} is uncontroversial, the question is whether it is relevant.
-It might not be clear that $N\mu_{M}\approx 1$ is achieved on a reasonable timescale.
-Using 32 bit floats, the unit roundoff (which we will agree to mean half the machine epsilon) is ${\sim}1.2\times10^{-7}$.
+It might not be clear that $N\mu_{M}\approx 1$ can be achieved on a reasonable timescale.
+Using 32 bit floats, recall that $\mu_{M} \approx 1.2\times10^{-7}$.
 Assume that a function call takes ${\sim}\SI{100}{\nano \second}$, and we run the algorithm on a chip with 100 threads.
 This machine will be able to compute $10^{9}$ function calls/second, putting $N\mu_{M} \approx 100$ in a single second.
 Clearly, the result of this calculation will have little connection to the original integral.
