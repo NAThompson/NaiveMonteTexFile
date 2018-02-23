@@ -1,0 +1,326 @@
+\documentclass{ansarticle}
+\usepackage{siunitx}
+\usepackage{csquotes}
+\usepackage{minted}
+\title{Naive Monte-Carlo Integration in 2018 \\
+       Archive of Numerical Software}
+\author[1]{Nick Thompson}
+\affil[1]{bandgap.io}
+\author[2]{John Maddock}
+\affil[2]{The Boost Software Foundation}
+\runningtitle{Naive Monte-Carlo Integration}
+\runningauthor{Thompson}
+
+%------------------------------------------------------------------------------
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Naive Monte-Carlo integration has long been a fixture of undergraduate programming assignments.
+However, if we impose the requirements of multithreading, arbitrary precision, progress reporting, and domain reduction with integrands perhaps singular on the boundary which works with a high degree of reliability, we obtain an algorithm which will surprise and challenge the skills of the most capable numerical analyst.
+\end{abstract}
+
+%------------------------------------------------------------------------------
+\section{Introduction}
+
+In late 2017, I was learning about ways to solve high-dimensional PDEs without resorting to techniques from linear algebra, and had come to be enamored with Feynman-Kac formulations of several common PDEs, which reduce these problems to high-dimensional numerical integration.
+After reviewing the open-source packages for this task I found that none satisfied the requirement of interactivity, which I regarded as fundamental.
+So I contacted John Maddock, the maintainer of Boost.Math, to see if he was interested in accepting Monte-Carlo integrators into his library.
+Although I had suggested skipping the naive Monte-Carlo integrator in favor of directly deploying variance reduction techniques, John advised we should ``walk before we run'', and deploy the naive algorithm first.
+Indeed, it was hard enough to get the algorithm to stand up.
+In this paper, we discuss the subtle problems we discovered while building the algorithm, with the understanding that these same issues will resurface in construction of more sophisticated algorithms like randomized quasi Monte Carlo and MISER Monte Carlo.
+
+More to agree on notation than to review, let $\Omega \subset \mathbf{R}^{n}$ and $f \in L_{2}(\Omega)$ \citep{weinzierl2000introduction}.
+A naive Monte Carlo integration estimates
+\begin{align*}
+I[f] := \int_{\Omega} f(\mathbf{x}) \, \mathrm{d}x
+\end{align*}
+via the sequence of approximations
+\begin{align*}
+Q_{N}[f] :=  \frac{|\Omega|}{N} \sum_{i=0}^{N-1} f(\mathbf{x}_{i}) =: |\Omega|\left<f\right>_{N}
+\end{align*}
+where $\{\mathbf{x}_{i} \}_{i=0}^{N-1} \subset \Omega \setminus \partial \Omega$ are uniformly distributed pseudo-random vectors.
+The variance
+\begin{align*}
+\sigma_{N}^{2} := \frac{1}{N-1} \sum_{i=0}^{N-1} \left( f(\mathbf{x}_{i}) - \left<f \right>_{N}\right)^{2}
+\end{align*}
+allows us to bound the error is a statistical sense, which we write as
+\begin{align*}
+I[f]  \approx Q_{N}[f] \pm \frac{|\Omega|\sigma_{N}}{\sqrt{N}}
+\end{align*}
+From this expression, we see that the convergence is very slow, only $\mathcal{O}(1/\sqrt{N})$, and that the method does not converge at all unless $\{\sigma_{N}\}_{N=1}^{\infty}$ is bounded--a condition guaranteed by $f \in L_{2}(\Omega)$.
+
+Our requirements for the routine were as follows:
+
+\begin{enumerate}
+\item\label{Multithread} The algorithm should employ a user-provided number of threads
+\item\label{Domain} The domain $\Omega$ should be allowed to be infinite, finite, or half-infinite, along any axis
+\item\label{Error} The user should be able to specify an error goal, rather than a number of function calls
+\item\label{Progress} The routine should report its progress, and give an estimate of the error in real-time
+\item\label{Cancel} The routine should support graceful cancellation, meaning that the best estimate of the integral should be returned when the task is cancelled, and cancellation should not require the entire program to be halted (say via ctrl-C)
+\item\label{UserRNG} Support user-supplied random number generators
+\item\label{Precision} Support any precision requested by the user, whether float, double, or long double
+\end{enumerate}
+
+It is a testament to the massive increase in power of modern hardware and expressivity of modern programming languages that just 20 years ago, the naive Monte-Carlo integrator provided by the GSL \citep{gough2009gnu} was not able to satisfy \emph{any} of these requirements.
+
+Multithreading increases the complexity of the algorithm, but not in the way one might expect.
+The algorithm is embarrassingly parallel, and language level support for multithreading and hardware support for atomics makes implementation straightforward.\footnote{Straightforward is not to be mistaken with easy. Getting the routine to compile on a broad array of compilers and architectures required a massive number of CI tasks and source code workarounds.}
+The real complication is that the vast increase in the total number of operations made possible by this change breaks our mental model of the error.
+Let $\mu_{M}$ denote the unit roundoff for the floating precision type (which we understand as half the machine epsilon) and $\hat{Q}_{N}[f]$ be the floating point sum corresponding to $Q_{N}[f]$.
+We use the ``online'' mean calculation discussed in \citep{knuth1997art} to calculate $Q_{N}[f]$, as alternatives generally require knowing the number of samples in advance.
+This algorithm for the running mean $M_{i}$ computed from samples $y_{i}$ is symbolically represented as 
+\begin{align*}
+M_{0} := 0, \quad M_{i} := M_{i-1} + \frac{y_{i} - M_{i-1}}{i}
+\end{align*}
+We see that as $i \to \infty$, then the floating point mean $\hat{M}_{i-1}\oplus (\hat{y}_{i}\ominus \hat{M}_{i-1})\oslash i$ is bitwise equal to $\hat{M}_{i-1}$ whenever $i > \frac{|\hat{y}_{i}- \hat{M}_{i}|}{|\hat{M}_{i}|} \mu_{M}^{-1}$.
+If the samples $\hat{y}_{i}$ all lie within a bounded distance from the true mean $M$, then eventually $M_{i}$ ceases to evolve, wasting further computation.
+Assuming $\frac{|\hat{y}_{i}- \hat{M}_{i}|}{|\hat{M}_{i}|} \lesssim 1$ for large $i$, then then minimum achievable absolute error is $|\Omega|\sigma\sqrt{\mu_{M}}$, which is much larger than the precision of the type and indicates that lower precision could've been used had the algorithm employed a more sophisticated algorithm for computing the mean.
+
+To formalize this idea, we note that the error bound of the one pass average calculation is no better than naive summation.\footnote{Note to self: Prove this!}
+This means that
+\begin{align*}
+\left|\hat{Q}_{N}[\hat{f}] - Q_{N}[\hat{f}]\right|
+\le |\Omega|N\mu_{M} \frac{1}{N} \sum_{i=0}^{N-1} |\hat{f}(\mathbf{x}_{i})|
+\le |\Omega|N\mu_{M} \frac{1}{N} \sum_{i=0}^{N-1} |f(\mathbf{x}_{i})|(1 + k\mu_{M})
+\end{align*}
+where $k \ge 1$ allows for the function to be evaluated with some amount error exceeding the unit roundoff.
+As $N\to \infty$,
+\begin{align*}
+\frac{1}{N} \sum_{i=0}^{N-1} |f(\mathbf{x}_{i})| \to \left\|f\right\|_{1}
+\end{align*}
+and as such
+\begin{align*}
+\left|\hat{Q}_{N}[\hat{f}] - Q_{N}[\hat{f}]\right|
+\lesssim N|\Omega|\mu_{M}  \left\|f\right\|_{1} +N|\Omega|k\mu_{m}^{2}\left\|f\right\|_{1}
+\end{align*}
+From this we see that the error involved in evaluated the function is second order in the unit roundoff, and will henceforth be ignored.
+Our worst-case (volume normalized) error for unstabilized summation is \citep{higham1993accuracy}
+\begin{align}\label{ErrorEstimateWRoundoff}
+\frac{\left| I[f] - \hat{Q}_{N}[f] \right| }{|\Omega|}
+\le
+\frac{\left| I[f] - Q_{N}[\hat{f}]\right|}{|\Omega|} + \frac{\left| Q_{N}[f] -  \hat{Q}_{N}[\hat{f}] \right| }{|\Omega|}
+\approx \frac{\sigma}{\sqrt{N}} + N\mu_{M}\left\| f\right\|_{1}
+\end{align}
+where $\sigma := \lim_{N\to \infty} \sigma_{N}$.
+We see that the worst case roundoff error \emph{diverges} faster than the Monte-Carlo algorithm \emph{converges}.
+The worst case roundoff occurs with sufficient frequency that a robust library routine must regard it as the correct error model; a trivial example using the Monte-Carlo estimation of $\pi$ which roughly attains the worst case error is demonstrated below.
+
+
+The error estimate \ref{ErrorEstimateWRoundoff} is uncontroversial, the question is whether it is relevant.
+It might not be clear that $N\mu_{M}\approx 1$ is achieved on a reasonable timescale.
+Using 32 bit floats, the unit roundoff (which we will agree to mean half the machine epsilon) is ${\sim}1.2\times10^{-7}$.
+Assume that a function call takes ${\sim}\SI{100}{\nano \second}$, and we run the algorithm on a chip with 100 threads.
+This machine will be able to compute $10^{9}$ function calls/second, putting $N\mu_{M} \approx 100$ in a single second.
+Clearly, the result of this calculation will have little connection to the original integral.
+For 64 bit floats, the situation is slightly better, requiring about a week to destroy the calculation.
+However, the user is now victim to a more pernicious problem: By the time $10^{14}$ function evaluations has been completed, he now expects to obtain 7 digits of accuracy, but instead roundoff error has destroyed all but two.
+In addition, multiple runs with different random number generators are not guaranteed to alert the user to the problem: The quadrature nodes are random, but the values produced by the function evaluation are not.
+It is possible to be just as systematically biased under roundoff using one set of quadrature nodes as another. 
+
+There are two potential solutions to this problem: One is to use the error estimate \ref{ErrorEstimateWRoundoff} to obtain an \emph{optimal} number of function calls, and return whenever the error goal is achieved or the number of calls exceeds this value.
+A quick exercise shows us that the optimal number of calls is $N_{\mathrm{opt}} \approx \left( \frac{\sigma}{2\mu_{M}\left\|f\right\|_{1}}\right)^{2/3}$.
+This method was tested, and does indeed work.
+However, plugging the optimal number of calls into the volume normalized error bound shows that the minimum error bound is approximately
+\begin{align*}
+(2^{1/3}+2^{-2/3})\sigma^{2/3}\left\|f\right\|_{1}^{1/3} \mu_{M}^{1/3}
+\end{align*}
+ distressingly large, see Table \ref{tab:errorestimates}.
+This shows that a double precision Monte-Carlo integration can only hope to recover roughly floating precision.
+
+The second solution is to use Kahan summation to compute $\hat{Q}_{N}$, and this is what is done in boost, which applies it to the one-pass variance and mean calculation presented in \citep{knuth1997art}.
+This changes the error bound to 
+\begin{align}\label{KahanError}
+\frac{\left| I[f] - \hat{Q}_{N}[\hat{f}] \right|}{|\Omega|} \lesssim \frac{\sigma}{\sqrt{N}} + (2\mu_{M} + CN\mu_{M}^2)\left\|f\right\|_{1}
+\end{align}
+for some $C > 0$.
+The $\mathcal{O}(N\mu_{M}^2)$ term shows us that the use of Kahan summation cannot make the error independent of the number of function calls, but this cannot be achieved anyway, since this is error term has the same form as the error from adding approximate function values $\hat{f}(\mathbf{x}_{i}) \approx f(\mathbf{x}_{i})(1+\epsilon_{i})$ where $|\epsilon_{i}| \le 2\mu_{M}$ is a typical error estimate for function evaluation.
+
+The optimal number of function calls using Kahan summation is
+\begin{align*}
+N_{\mathrm{opt, stab}} = \left( \frac{\sigma}{2C\left\|f\right\|_{1} }\right)^{2/3}  \mu_{M}^{-4/3} \approx N_{\mathrm{opt,unstab}}^{2}
+\end{align*}
+and the minimal achievable error is $\mathcal{O}(\mu_{M}^{2/3})$.
+
+A typical argument against Kahan summation is that it emulates a higher precision arithmetic, so why not just have the user employ a higher-precision type? Indeed, this can be done in our routine, as long as the type supports C++11 atomic loads and stores.
+However, once you employ a higher precision type, it is applied \emph{everywhere}, which may be inefficient.
+The Kahan summation employed here is used judiciously in the place we understand to be a problem.
+In addition, we expect (and have verified using \mintinline{bash}{perf}) that the algorithm spends most of its time evaluating the integrand and generating random numbers.
+As the dimensionality increases, the use of Kahan summation because a more and more insignificant fraction of the total computation.
+
+\begin{table}
+  \begin{center}
+    \begin{tabular}{lcccc}
+      \toprule
+   Precision (bits)  & $N_{\mathrm{opt, unstab}}$ &  $N_{\mathrm{opt, stab}}$ & $E_{\mathrm{min, unstab}}$ & $E_{\mathrm{min, stab}}$  \\
+      \hline
+      16 & $100$                                                     &  $10^4$                              & 0.14  & \\
+      32 & $41285$                                                 &  $1.7\times 10^{9}$                              & 0.0073   & \\
+      64 & $2.7\times 10^{10}$                               &  $7.5 \times 10^{20}$                             &  $9.1\times 10^{-6}$ & \\
+      80 & $4.4\times 10^{12}$                               &  $1.9\times 10^{25}$                              & $7.1\times 10^{-7}$   & \\
+      128 & $3.0\times 10^{22}$                             &  $9.0\times 10^{44}$                             & $8.6\times 10^{-12}$  & \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
+    \caption{Minimal absolute error and optimal number of function calls for the given number of bits of precision, under the assumptions that $\sigma^{2/3}\left\|f\right\|_{1}^{1/3}$ and $\sigma/\left\|f\right\|_1$ are $\mathcal{O}(1)$.}
+    \label{tab:errorestimates}
+\end{table}
+
+
+\section{Variable transformations}
+
+The Monte-Carlo integrators found in the GSL and Numerical Recipes require the user to rescale the integrands themselves-and for good reason: Correctly rescaling the integrands is exceptionally difficult.
+The difficulty is that integration is translationally invariant, but \emph{floating point spacing is not}, being designed instead to approximate scale-invariance.
+Our mental models of these two objects are in tension, leading to mistakes.
+For instance, if $f$ is singular at $a > 0$ with $b > a$, we write
+\begin{align*}
+\int_{a}^{b} f(x) \, \mathrm{d}x = (b-a) \int_{0}^{1} f(a + (b-a)t) \, \mathrm{d}t
+\end{align*}
+and then take samples $s_{i} \in ]0, 1[$.
+\emph{This is not sufficient to avoid the singularity}.
+All we require to hit the singularity at $a$ is for some sample $s_i$ to satisfy $(b-a)s_i < a\mu_{M}$, so that the floating point expression $a\oplus((b\ominus a)\otimes s_i)$ evaluates identically to $a$.
+Since a vast number of representables of a given floating point type reside below the unit roundoff, we will hit this singularity almost instantaneously, unless $a$ is itself "close to zero".
+This suggests an important lesson: It is \emph{much} safer and easier to perturb the boundary than to to sample on the interior of a boundary.
+Let $\mathrm{nf}(a)$ denote the smallest floating point representable $> a$, and $\mathrm{pf}(a)$ denote the greatest floating point representable less than $a$.
+We now write
+\begin{align*}
+\int_{a}^{b} f(x) \, \mathrm{d}x \approx \int_{\mathrm{nf}(a)}^{\mathrm{pf}(b)} f(x) \, \mathrm{d}x  = (\mathrm{pf}(b)- \mathrm{nf}(a)) \int_{0}^{1} f(\mathrm{nf}(a) + (\mathrm{pf}(b)-\mathrm{nf}(a))t) \, \mathrm{d}t
+\end{align*}
+We can now sample on the closed set $[0, 1]$ without fear of hitting singularities.
+
+If the upper bound is infinite and $f$ is singular at $a$, we use the following transformation:
+\begin{align*}
+\int_{a}^{\infty} f(x) \, \mathrm{d}x \approx \int_{\mathrm{nf}(a)}^{\mathrm{nf}(a) + 1/\epsilon_{M}} f(x) \, \mathrm{d}x = \int_{0}^{1} f\left(\mathrm{nf}(a) + \frac{t}{1+\epsilon_{M} - t}\right) \frac{1+\epsilon_{M}}{(1+\epsilon_{M} -t)^2} \, \mathrm{d}t
+\end{align*}
+If the lower bound is infinite, then we employ
+\begin{align*}
+x = \mathrm{pf}(a) + \frac{t-1}{t+\theta}
+\end{align*}
+and
+\begin{align*}
+\int_{-\infty}^{a} f(x) \, \mathrm{d}x
+\approx
+\int_{-\frac{1}{\theta} + \mathrm{pf}(a)}^{ \mathrm{pf}(a)} f(x) \, \mathrm{d}x
+=
+\int_{0}^{1} f\left( \mathrm{pf}(a)+ \frac{t-1}{t+\theta}\right) \frac{1+\theta}{(t+\theta)^{2}} \, \mathrm{d}t
+\end{align*}
+where $\theta$ is the square root of the floating point minimum for the type.
+
+For double infinite limits, we use
+\begin{align*}
+x = g(t) = \frac{2t-1}{4(t+\epsilon_{M})(1+\epsilon_{M}-t)}
+\end{align*}
+We have
+\begin{align*}
+g(0) = -\frac{1}{4\epsilon_{M}(1+\epsilon_{M})} \qquad g(1) = \frac{1}{4\epsilon_{M}(1+\epsilon_{M})}
+\end{align*}
+so the transform is
+\begin{align*}
+\int_{-\infty}^{\infty} f(x) \, \mathrm{d}x \approx \int_{-\frac{1}{4\epsilon_{M}(1+\epsilon_{M})}}^{ \frac{1}{4\epsilon_{M}(1+\epsilon_{M})}}
+f(x) \, \mathrm{d}x
+=
+ \int_{0}^{1}\frac{1}{4} f\left( \frac{2t-1}{4(t+\epsilon_{M})(1+\epsilon_{M}-t)} \right) \left(\frac{1}{(1+\epsilon_{M}-t)^2} + \frac{1}{(t+\epsilon_{M})^2} \right) \mathrm{d}t
+\end{align*}
+
+These transformations allow us to do robust Monte-Carlo integration on singular integrands and over infinite boundaries.
+However, the stricture to never peel a high-dimensional orange led me to be concerned that we would lose structure of the bounded integrands by blindly perturbing every boundary.
+More explicitly, if the user requested integration over $[-1, 1]^{d}$, we would integrate over $[-1+\mu_{M}, 1-\mu_{M}]^{d}$, a domain which has significantly smaller volume than $[-1, 1]^{d}$ whenever the precision is low and the dimension is large.
+As such, our routine allows the user to specify if the integrand is singular on the boundary or not, defaulting to the supposition that the integrand is singular.
+Though constructing a function which is woefully miscalculated with boundary perturbations is simple, finding one of practical interest is harder.
+Unlike Kahan summation, which I realized as a necessity only after the routine failed to produce reasonable estimates, this is a theoretical worry.
+
+
+\section{Error Goals, Progress Reporting, and Graceful Cancellation}
+
+Academic papers which explicitly discuss the usability of algorithms are rare, but ones that complain about them are common.
+In \citep{bailey2006ten}, the authors discuss struggling to get a reasonable Monte-Carlo estimate of
+\begin{align*}
+E_{2} :=\int_{0}^{1}\int_{0}^{1}  \frac{2}{3}\sqrt{x^2+y^2} + \frac{1}{3}\sqrt{1+ (x-y)^2} \, \dx \mathrm{d}y \approx 0.86900905527453446388497059
+\end{align*}
+They write
+\begin{displayquote}
+``We tried doing a Monte-Carlo evaluation for this problem, using a pseudo-random number generator based on the recently discovered class of provably normal numbers. The results we obtained for the two integrals in question, with $10^8$ pseudo-random pairs, are 0.765203 and 1.076643, respectively.''
+\end{displayquote}
+
+This is a manifestation of the danger of specifying a number of function calls rather than an error goal.
+By contrast, the following code
+\begin{minted}{cpp}
+#include <iostream>
+#include <boost/math/quadrature/naive_monte_carlo.hpp>
+
+using boost::math::quadrature::naive_monte_carlo;
+
+template<class Real>
+void calcE2()
+{
+    auto f = [](std::vector<Real> const & x)
+    {
+        return (2*std::sqrt(x[0]*x[0] + x[1]*x[1]) + std::sqrt(1+(x[0] - x[1])*(x[0]-x[1])))/3;
+    };
+    std::vector<std::pair<Real, Real>> bounds{{0.0, 1.0}, {0.0, 1.0}};
+    Real error_goal = 0.00001;
+    naive_monte_carlo<Real, decltype(f)> mc(f, bounds, error_goal,/* singular= */ false);
+    std::future<Real> task = mc.integrate();
+    Real E2 = task.get();
+    std::cout << "E_2 = " << E2 << std::endl;
+}
+
+int main()
+{
+    calcE2<double>();
+}
+\end{minted}
+returned 0.869005, 0.869011, 0.868999, 0.868995, 0.8690; each run requiring ${\sim}6$ seconds of a 2 core consumer laptop.
+The requirement that the algorithm be parametrized in terms of error instead of the number of function evaluations is a significant complication.
+Foremost among these is the possibility for the user to specify an error goal which corresponds to an excessive runtime.
+It is very natural for a user, after succeeding in a reasonable time with an error goal of (say) 0.001, to request an error of 0.0001.
+However, due to the slow convergence of Monte-Carlo integration, this seemingly innocuous change corresponds to a runtime which is two orders of magnitude longer!
+In the author's experience developing commercial software, this is the problem most likely to elicit complaints from users.
+Before C++11, the goal of progress reporting would've been insurmountably difficult.
+However, having \mintinline{cpp}{integrate()} return a \mintinline{cpp}{std::future} makes the problem tractable:
+\begin{minted}{cpp}
+std::future<Real> task = mc.integrate();
+while (task.wait_for(std::chrono::seconds(1)) != std::future_status::ready)
+{
+    display_progress(mc);
+    if(cancellation_requested())
+    {
+        mc.cancel();
+    }
+}
+Real E2 = task.get();
+\end{minted}
+A reasonable (but not fancy) implementation of \mintinline{cpp}{display_progress} is shown in \mintinline{cpp}{bailey_example.cpp} and maintained on \href{boost.org}{boost.org}.
+For progress reporting, we note that the compute time $T$ is proportional to the number of function evaluations.
+The error model (assuming Kahan summation) is
+\begin{align*}
+E_{\mathrm{current}} \approx \frac{\sigma_{N_{\mathrm{current}}}}{\sqrt{N_{\mathrm{current}}}}
+\quad \mathrm{and} \quad
+E_{\mathrm{goal}} \approx \frac{\sigma_{N_{\mathrm{necessary}}}}{\sqrt{N_{\mathrm{necessary}}}}
+\end{align*}
+We cannot predict the evolution of the variance sequence $\{\sigma_{N}\}$, and we can only hope that at some point it stabilizes to some limit.
+Hence, we make the dubious assumption that $\sigma_{N_{\mathrm{current}}} \approx \sigma_{N_{\mathrm{necessary}}}$ and write
+\begin{align*}
+T_{\mathrm{necessary}} = \left( \frac{E_{\mathrm{current}}}{E_{\mathrm{goal}}} \right)^{2}T_{\mathrm{current}}
+\end{align*}
+and hence
+\begin{align*}
+\mathrm{progress} = \frac{T_{\mathrm{current}}}{T_{\mathrm{necessary}}} = \left( \frac{E_{\mathrm{goal}}}{E_{\mathrm{current}}} \right)^{2}
+\end{align*}
+This is a trivial result, but it is a rare algorithm which admits such a nice progress model.
+In practice, it has been observed to work well, but for strongly peaked integrands the progress bar sometimes moves backwards.
+
+\section{Conclusion}
+
+A naive Monte-Carlo integration, though perhaps not powerful enough to enter into production computational workflows, is nonetheless a basic technology which allows us to sanity check more powerful algorithms, and as such it deserves a careful implementation.
+Despite its simplicity, naive Monte-Carlo integration exhibits subtle failure modes and can be potentially frustrating for users.
+We hope to avoid these mistakes as we move forward deploying more sophisticated high-dimensional quadrature routines into Boost.Math, and expect many more.
+
+
+
+\emph{The \mintinline{cpp}{naive_monte_carlo} class lands in Boost 1.67. Its documentation can be found \href{http://www.boost.org/doc/libs/1_67_0/libs/math/doc/html/quadrature.html}{here}. A special thanks to John Maddock for the monumental task of getting the multithreaded atomics to compile and run on every compiler in the Boost.Math CI matrix, as well as reviewing the PR.}
+
+\bibliographystyle{abbrvnat}
+\bibliography{submitting}
+\end{document}
