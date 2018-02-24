@@ -318,7 +318,7 @@ while (task.wait_for(std::chrono::seconds(1)) != std::future_status::ready)
 }
 Real E2 = task.get();
 \end{minted}
-A reasonable (but not fancy) implementation of \mintinline{cpp}{display_progress} is shown in \mintinline{cpp}{bailey_example.cpp} and maintained on \href{http://www.boost.org}{boost.org}.
+A reasonable (but not fancy) implementation of \mintinline{cpp}{display_progress} is shown in \mintinline{cpp}{naive_monte_carlo_example.cpp} and maintained on \href{http://www.boost.org}{boost.org}.
 For progress reporting, we note that the compute time $T$ is proportional to the number of function evaluations.
 The error model (assuming Kahan summation) is
 \begin{align*}
