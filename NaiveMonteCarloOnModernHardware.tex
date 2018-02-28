@@ -204,7 +204,7 @@ For instance, if $f$ is singular at $a > 0$ with $b > a$, we write
 \begin{align*}
 \int_{a}^{b} f(x) \, \mathrm{d}x = (b-a) \int_{0}^{1} f(a + (b-a)t) \, \mathrm{d}t
 \end{align*}
-and then take samples $s_{i} \in ]0, 1[$.
+and then take samples $s_{i}\in\, ]0, 1[$.
 \emph{This is not sufficient to avoid the singularity}.
 All we require to hit the singularity at $a$ is for some sample $s_i$ to satisfy $(b-a)s_i < a\mu_{M}$, so that the floating point expression $a\oplus((b\ominus a)\otimes s_i)$ evaluates identically to $a$.
 Since a vast number of representables of a given floating point type reside below the unit roundoff, we will hit this singularity almost instantaneously, unless $a$ is itself "close to zero".
@@ -337,6 +337,33 @@ and hence
 \end{align*}
 This is a trivial result, but it is a rare algorithm which admits such a nice progress model.
 In practice, it has been observed to work well, but for strongly peaked integrands the progress bar sometimes moves backwards.
+
+\section{Reproducibility}
+
+Our routine supports a user-provided seed for the random number generator, which might seem to indicate that the computation is reproducible.
+Regrettably, it is not.
+Each thread proceeds independently of the other threads, and a ``master'' thread periodically observes the process of the computation.
+This means that although the quasi-infinite sequence of quadrature nodes thread $t$ utilizes to produce it's estimate is the same for each run,
+the total number of nodes computed before being observed by the master thread and told to halt is not deterministic.
+In practice, we have found that providing the routine with a seed reduces the variance from run to run, but is not sufficient to produce the same number each time.
+For example, when calculating $E_{2}$ with a user-provided seed, we obtained
+\begin{align*}
+0.869006160,
+0.869007078,
+0.869006804,
+0.869005655,
+0.869006299,
+0.869007085
+\end{align*}
+and by using a random device to seed, we obtain
+\begin{align*}
+0.868996869,
+0.869019617,
+0.869004970,
+0.869019815,
+0.869009792,
+0.869002341
+\end{align*}
 
 \section{Conclusion}
 
